@@ -1,0 +1,6 @@
+out/
+lib/
+*.class
+*.db
+*.db-wal
+*.db-shm
