@@ -84,12 +84,13 @@ public final class JobScheduler {
             String claimSql = "UPDATE jobs SET status='running', locked_by=?, locked_at=? " +
                     "WHERE id=? AND status='pending'";
             try (PreparedStatement ps = conn.prepareStatement(claimSql)) {
-                ps.setString(1, workerId);
+                String lockOwner = workerId + ":" + java.util.UUID.randomUUID();
+                ps.setString(1, lockOwner);
                 ps.setString(2, Instant.now().toString());
                 ps.setLong(3, candidateId);
                 int updated = ps.executeUpdate();
                 if (updated == 1) {
-                    return loadJob(conn, candidateId);
+                    return loadJob(conn, candidateId, lockOwner);
                 }
                 // lost the race for this row -- try the next candidate
             }
@@ -110,10 +111,11 @@ public final class JobScheduler {
         return ids;
     }
 
-    private Optional<Job> loadJob(Connection conn, long id) throws SQLException {
-        String sql = "SELECT id, name, attempts, max_attempts, interval_seconds FROM jobs WHERE id=?";
+    private Optional<Job> loadJob(Connection conn, long id, String lockOwner) throws SQLException {
+        String sql = "SELECT id, name, attempts, max_attempts, interval_seconds FROM jobs WHERE id=? AND status='running' AND locked_by=?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setLong(1, id);
+            ps.setString(2, lockOwner);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
                     return Optional.empty();
@@ -125,33 +127,36 @@ public final class JobScheduler {
                         rs.getString("name"),
                         rs.getInt("attempts"),
                         rs.getInt("max_attempts"),
-                        interval));
+                        interval, lockOwner));
             }
         }
     }
 
-    /** Marks a job successful: done for one-shot jobs, rescheduled for recurring ones. */
+    /** Marks the current claim successful. Stale claims cannot modify a reclaimed job. */
     public void completeJob(Connection conn, Job job) throws SQLException {
         if (job.intervalSeconds == null) {
             try (PreparedStatement ps = conn.prepareStatement(
-                    "UPDATE jobs SET status='done', locked_by=NULL, locked_at=NULL WHERE id=?")) {
+                    "UPDATE jobs SET status='done', locked_by=NULL, locked_at=NULL WHERE id=? AND status='running' AND locked_by=?")) {
                 ps.setLong(1, job.id);
+                ps.setString(2, job.lockOwner);
                 ps.executeUpdate();
             }
         } else {
             String nextRun = Instant.now().plusSeconds(job.intervalSeconds).toString();
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE jobs SET status='pending', run_at=?, locked_by=NULL, locked_at=NULL, " +
-                            "attempts=0, last_error=NULL WHERE id=?")) {
+                            "attempts=0, last_error=NULL WHERE id=? AND status='running' AND locked_by=?")) {
                 ps.setString(1, nextRun);
                 ps.setLong(2, job.id);
+                ps.setString(3, job.lockOwner);
                 ps.executeUpdate();
             }
         }
     }
 
     /**
-     * Marks a job failed. Retries with exponential backoff until
+     * Marks the current claim failed. Stale claims cannot modify a reclaimed job.
+     * Retries with exponential backoff until
      * max_attempts is reached, then moves it to the 'dead' (dead-letter)
      * state so it stops being picked up.
      */
@@ -159,10 +164,11 @@ public final class JobScheduler {
         int attempts = job.attempts + 1;
         if (attempts >= job.maxAttempts) {
             try (PreparedStatement ps = conn.prepareStatement(
-                    "UPDATE jobs SET status='dead', attempts=?, last_error=?, locked_by=NULL, locked_at=NULL WHERE id=?")) {
+                    "UPDATE jobs SET status='dead', attempts=?, last_error=?, locked_by=NULL, locked_at=NULL WHERE id=? AND status='running' AND locked_by=?")) {
                 ps.setInt(1, attempts);
                 ps.setString(2, error);
                 ps.setLong(3, job.id);
+                ps.setString(4, job.lockOwner);
                 ps.executeUpdate();
             }
             return;
@@ -172,11 +178,12 @@ public final class JobScheduler {
         String nextRun = Instant.now().plusSeconds(backoffSeconds).toString();
         try (PreparedStatement ps = conn.prepareStatement(
                 "UPDATE jobs SET status='pending', run_at=?, attempts=?, last_error=?, " +
-                        "locked_by=NULL, locked_at=NULL WHERE id=?")) {
+                        "locked_by=NULL, locked_at=NULL WHERE id=? AND status='running' AND locked_by=?")) {
             ps.setString(1, nextRun);
             ps.setInt(2, attempts);
             ps.setString(3, error);
             ps.setLong(4, job.id);
+            ps.setString(5, job.lockOwner);
             ps.executeUpdate();
         }
     }

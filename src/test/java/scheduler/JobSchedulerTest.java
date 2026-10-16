@@ -19,6 +19,7 @@ public final class JobSchedulerTest {
 
     public static void main(String[] args) throws Exception {
         int failures = 0;
+        failures += runTest("testStaleWorkerCannotFinalizeReclaimedJob", JobSchedulerTest::testStaleWorkerCannotFinalizeReclaimedJob);
         failures += runTest("testClaimAssignsJobExactlyOnce", JobSchedulerTest::testClaimAssignsJobExactlyOnce);
         failures += runTest("testClaimReturnsEmptyWhenNoJobsReady", JobSchedulerTest::testClaimReturnsEmptyWhenNoJobsReady);
         failures += runTest("testCompleteOneShotJobMarksDone", JobSchedulerTest::testCompleteOneShotJobMarksDone);
@@ -73,6 +74,25 @@ public final class JobSchedulerTest {
             Db.initSchema(conn);
         }
         return f.getPath();
+    }
+
+    static void testStaleWorkerCannotFinalizeReclaimedJob() throws Exception {
+        String path = freshDb();
+        JobScheduler scheduler = new JobScheduler(Duration.ofSeconds(1));
+        try (Connection conn = Db.connect(path)) {
+            long id = scheduler.scheduleOnce(conn, "reclaimed", Instant.now().minusSeconds(1));
+            Job oldClaim = scheduler.claimNextJob(conn, "same-worker").orElseThrow();
+            scheduler.forceSetLockedAt(conn, id, Instant.now().minusSeconds(10));
+            Job newClaim = scheduler.claimNextJob(conn, "same-worker").orElseThrow();
+            assertTrue(!oldClaim.lockOwner.equals(newClaim.lockOwner), "each claim needs a unique lease");
+            scheduler.completeJob(conn, oldClaim);
+            assertEquals("running", scheduler.getStatus(conn, id), "old completion must not finalize new claim");
+            scheduler.failJob(conn, oldClaim, "stale error");
+            assertEquals("running", scheduler.getStatus(conn, id), "old failure must not requeue new claim");
+            assertEquals(0, scheduler.getAttempts(conn, id), "stale failure must not increment attempts");
+            scheduler.completeJob(conn, newClaim);
+            assertEquals("done", scheduler.getStatus(conn, id), "current owner can complete");
+        }
     }
 
     // -- single-worker correctness --
