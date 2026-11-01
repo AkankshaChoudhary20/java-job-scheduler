@@ -25,6 +25,9 @@ public final class JobScheduler {
     private final Duration staleLockTimeout;
 
     public JobScheduler(Duration staleLockTimeout) {
+        if (staleLockTimeout == null || staleLockTimeout.isZero() || staleLockTimeout.isNegative()) {
+            throw new IllegalArgumentException("stale lock timeout must be positive");
+        }
         this.staleLockTimeout = staleLockTimeout;
     }
 
@@ -33,6 +36,9 @@ public final class JobScheduler {
     }
 
     public long scheduleRecurring(Connection conn, String name, Instant firstRunAt, int intervalSeconds) throws SQLException {
+        if (intervalSeconds <= 0) {
+            throw new IllegalArgumentException("recurring interval must be positive");
+        }
         return insert(conn, name, firstRunAt, intervalSeconds);
     }
 

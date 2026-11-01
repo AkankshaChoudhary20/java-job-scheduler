@@ -19,6 +19,7 @@ public final class JobSchedulerTest {
 
     public static void main(String[] args) throws Exception {
         int failures = 0;
+        failures += runTest("testInvalidTimeoutsAndRecurringIntervalsAreRejected", JobSchedulerTest::testInvalidTimeoutsAndRecurringIntervalsAreRejected);
         failures += runTest("testStaleWorkerCannotFinalizeReclaimedJob", JobSchedulerTest::testStaleWorkerCannotFinalizeReclaimedJob);
         failures += runTest("testClaimAssignsJobExactlyOnce", JobSchedulerTest::testClaimAssignsJobExactlyOnce);
         failures += runTest("testClaimReturnsEmptyWhenNoJobsReady", JobSchedulerTest::testClaimReturnsEmptyWhenNoJobsReady);
@@ -267,6 +268,22 @@ public final class JobSchedulerTest {
 
         try (Connection conn = Db.connect(dbPath)) {
             assertEquals(jobCount, sched.countByStatus(conn, "done"), "every job should end up 'done'");
+        }
+    }
+
+    static void testInvalidTimeoutsAndRecurringIntervalsAreRejected() throws Exception {
+        for (Duration timeout : new Duration[]{Duration.ZERO, Duration.ofSeconds(-1)}) {
+            try {
+                new JobScheduler(timeout);
+                throw new AssertionError("stale timeout must be positive");
+            } catch (IllegalArgumentException expected) { }
+        }
+        JobScheduler scheduler = new JobScheduler(Duration.ofMinutes(5));
+        for (int interval : new int[]{0, -1, Integer.MIN_VALUE}) {
+            try {
+                scheduler.scheduleRecurring(null, "invalid", Instant.now(), interval);
+                throw new AssertionError("interval must be validated before accessing the database");
+            } catch (IllegalArgumentException expected) { }
         }
     }
 }
