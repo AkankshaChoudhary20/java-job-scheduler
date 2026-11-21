@@ -1,6 +1,6 @@
 # java-job-scheduler
 
-A DB-backed job scheduler that runs recurring/one-shot jobs exactly once
+A DB-backed job scheduler that coordinates recurring and one-shot job claims
 across multiple app instances -- the thing you need the moment you scale
 past one process and two of them try to run the same cron job
 simultaneously.
@@ -38,6 +38,11 @@ read-then-write.
   broken job stops being retried forever.
 - **Stale locks** (a worker that claimed a job and then crashed) are
   reclaimed after a configurable timeout, checked on every claim attempt.
+
+A worker can finish an external side effect and crash before recording
+completion. When the stale lock is reclaimed, another worker can retry that
+job. Use the job ID as an idempotency key for side effects such as sending
+notifications or updating a downstream service.
 
 ## Run it
 
